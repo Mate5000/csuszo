@@ -2,20 +2,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'pages/measurement_page.dart';
 import 'pages/dev_page.dart';
+import 'services/settings_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  runApp(const CsuszoApp());
+  final settings = SettingsService();
+  await settings.init();
+  runApp(CsuszoApp(settings: settings));
 }
 
 class CsuszoApp extends StatelessWidget {
-  const CsuszoApp({super.key});
+  final SettingsService settings;
+
+  const CsuszoApp({super.key, required this.settings});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Csúszási Súrlódás Mérő',
+      title: 'Mű',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: const Color(0xFF6750A4),
@@ -28,13 +33,15 @@ class CsuszoApp extends StatelessWidget {
         brightness: Brightness.dark,
       ),
       themeMode: ThemeMode.system,
-      home: const HomePage(),
+      home: HomePage(settings: settings),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final SettingsService settings;
+
+  const HomePage({super.key, required this.settings});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -43,15 +50,15 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    MeasurementPage(),
-    DevPage(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      MeasurementPage(settings: widget.settings),
+      DevPage(settings: widget.settings),
+    ];
+
     return Scaffold(
-      body: _pages[_currentIndex],
+      body: pages[_currentIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (i) => setState(() => _currentIndex = i),

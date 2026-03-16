@@ -4,12 +4,16 @@ import '../models/measurement_result.dart';
 import '../models/material_pair.dart';
 import '../services/sensor_collector.dart';
 import '../services/friction_calculator.dart';
+import '../services/settings_service.dart';
 import '../widgets/result_card.dart';
 import '../widgets/accel_chart.dart';
 import '../widgets/mu_helpers.dart';
+import 'settings_page.dart';
 
 class MeasurementPage extends StatefulWidget {
-  const MeasurementPage({super.key});
+  final SettingsService settings;
+
+  const MeasurementPage({super.key, required this.settings});
 
   @override
   State<MeasurementPage> createState() => _MeasurementPageState();
@@ -88,7 +92,11 @@ class _MeasurementPageState extends State<MeasurementPage>
       _dataCount = 0;
     });
     HapticFeedback.mediumImpact();
-    _collector.startCollection();
+    _collector.startCollection(
+      dataIntervalMs: widget.settings.samplingIntervalMs,
+      timeoutMs: widget.settings.timeoutMs,
+      stopConfirmCount: widget.settings.stopConfirmCount,
+    );
   }
 
   void _reset() {
@@ -101,13 +109,22 @@ class _MeasurementPageState extends State<MeasurementPage>
     });
   }
 
+  Future<void> _openSettings() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SettingsPage(settings: widget.settings),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: CustomScrollView(
         slivers: [
           SliverAppBar.large(
-            title: const Text('Csúszási súrlódási együttható mérő'),
+            title: const Text('Mű'),
             centerTitle: false,
             actions: [
               if (_state != _MeasureState.idle)
@@ -116,6 +133,11 @@ class _MeasurementPageState extends State<MeasurementPage>
                   icon: const Icon(Icons.refresh_rounded),
                   tooltip: 'Újrakezdés',
                 ),
+              IconButton(
+                onPressed: _openSettings,
+                icon: const Icon(Icons.settings_rounded),
+                tooltip: 'Beállítások',
+              ),
             ],
           ),
           SliverToBoxAdapter(
@@ -144,7 +166,8 @@ class _MeasurementPageState extends State<MeasurementPage>
                   AccelChart(result: _result!),
                 ],
 
-                if (_state == _MeasureState.error && _errorMessage != null) ...[
+                if (_state == _MeasureState.error &&
+                    _errorMessage != null) ...[
                   const SizedBox(height: 24),
                   _buildErrorCard(),
                 ],
@@ -153,9 +176,10 @@ class _MeasurementPageState extends State<MeasurementPage>
                   const SizedBox(height: 24),
                   Text(
                     'Előző mérések',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                    style:
+                        Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
                   ),
                   const SizedBox(height: 12),
                   ..._history
@@ -174,7 +198,8 @@ class _MeasurementPageState extends State<MeasurementPage>
                       ),
                 ),
                 const SizedBox(height: 12),
-                ...referenceMaterialPairs.map((pair) => _buildMaterialPairTile(pair)),
+                ...referenceMaterialPairs
+                    .map((pair) => _buildMaterialPairTile(pair)),
                 const SizedBox(height: 32),
               ]),
             ),
@@ -575,5 +600,5 @@ class _MeasurementPageState extends State<MeasurementPage>
         ),
       ),
     );
-  } 
+  }
 }

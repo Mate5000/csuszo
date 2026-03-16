@@ -3,15 +3,12 @@ import 'package:sensors_plus/sensors_plus.dart';
 
 /// Collects accelerometer Y-axis data.
 /// Logic mirrors the React app:
-///  - 20 Hz data collection (50 ms intervals)
+///  - Configurable data collection interval (default 50 ms = 20 Hz)
 ///  - Detects movement (maxAbs > 0.2g on Y axis)
-///  - Detects stop (avgAbs < 0.1g AND maxAbs < 0.15g for 6 consecutive checks)
-///  - Safety timeout: 8 seconds
+///  - Detects stop (avgAbs < 0.1g AND maxAbs < 0.15g for N consecutive checks)
+///  - Configurable safety timeout (default 8 seconds)
 class SensorCollector {
-  static const int _dataIntervalMs = 50; // 20 Hz adatgyűjtés
   static const int _detectionIntervalMs = 100; // megállás detektálás
-  static const int _timeoutMs = 8000; // max mérési idő
-  static const int _stopConfirmCount = 6; // hány check kell a megálláshoz
   static const double _moveThreshold = 0.2; // g
   static const double _stopAvgThreshold = 0.1; // g
   static const double _stopMaxThreshold = 0.15; // g
@@ -37,7 +34,15 @@ class SensorCollector {
   /// Called when collection starts (movement detected).
   void Function()? onStarted;
 
-  void startCollection() {
+  /// Elindítja a szenzor adatgyűjtést.
+  /// [dataIntervalMs] – milyen sűrűn mentse el a mintákat (ms).
+  /// [timeoutMs] – max mérési idő (ms).
+  /// [stopConfirmCount] – hány egymást követő "csend" kell a megálláshoz.
+  void startCollection({
+    int dataIntervalMs = 50,
+    int timeoutMs = 8000,
+    int stopConfirmCount = 6,
+  }) {
     if (_isCollecting) return;
 
     _isCollecting = true;
@@ -48,7 +53,7 @@ class SensorCollector {
 
     onStarted?.call();
 
-    // ~60 Hz szenzor olvasás, de csak 20 Hz-en mentjük
+    // ~60 Hz szenzor olvasás, de csak `dataIntervalMs`-ként mentjük
     _accelSub = accelerometerEventStream(
       samplingPeriod: const Duration(milliseconds: 10),
     ).listen((event) {
@@ -56,7 +61,7 @@ class SensorCollector {
 
       final now = DateTime.now();
       if (_lastDataTime == null ||
-          now.difference(_lastDataTime!).inMilliseconds >= _dataIntervalMs) {
+          now.difference(_lastDataTime!).inMilliseconds >= dataIntervalMs) {
         // sensors_plus m/s²-ben ad, osztjuk 9.80665-tel → g egység
         _collectedY.add(event.y / 9.80665);
         _lastDataTime = now;
@@ -65,27 +70,28 @@ class SensorCollector {
     });
 
     // Megállás detektálás 100 ms-ként
-    _detectionTimer =
-        Timer.periodic(const Duration(milliseconds: _detectionIntervalMs), (_) {
-      _checkStopCondition();
+    _detectionTimer = Timer.periodic(
+        const Duration(milliseconds: _detectionIntervalMs), (_) {
+      _checkStopCondition(stopConfirmCount);
     });
 
     // Biztonsági timeout
-    _timeoutTimer = Timer(const Duration(milliseconds: _timeoutMs), () {
+    _timeoutTimer = Timer(Duration(milliseconds: timeoutMs), () {
       _finish();
     });
   }
 
-  void _checkStopCondition() {
+  void _checkStopCondition(int stopConfirmCount) {
     if (!_isCollecting || _collectedY.length < 20) return;
 
     final lastValues = _collectedY.length >= 10
         ? _collectedY.sublist(_collectedY.length - 10)
         : _collectedY;
 
-    final avgAbs =
-        lastValues.map((v) => v.abs()).reduce((a, b) => a + b) / lastValues.length;
-    final maxAbs = lastValues.map((v) => v.abs()).reduce((a, b) => a > b ? a : b);
+    final avgAbs = lastValues.map((v) => v.abs()).reduce((a, b) => a + b) /
+        lastValues.length;
+    final maxAbs =
+        lastValues.map((v) => v.abs()).reduce((a, b) => a > b ? a : b);
 
     // Mozgás detektálás
     if (!_hasMoved && maxAbs > _moveThreshold) {
@@ -96,7 +102,7 @@ class SensorCollector {
     if (_hasMoved) {
       if (avgAbs < _stopAvgThreshold && maxAbs < _stopMaxThreshold) {
         _stoppedCounter++;
-        if (_stoppedCounter >= _stopConfirmCount) {
+        if (_stoppedCounter >= stopConfirmCount) {
           _finish();
         }
       } else {

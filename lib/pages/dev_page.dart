@@ -2,10 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:fl_chart/fl_chart.dart';
+import '../services/settings_service.dart';
 
 /// Dev page for real-time sensor data visualization.
 class DevPage extends StatefulWidget {
-  const DevPage({super.key});
+  final SettingsService settings;
+
+  const DevPage({super.key, required this.settings});
 
   @override
   State<DevPage> createState() => _DevPageState();
@@ -16,7 +19,7 @@ class _DevPageState extends State<DevPage> {
   StreamSubscription<GyroscopeEvent>? _gyroSub;
   StreamSubscription<AccelerometerEvent>? _rawAccelSub;
 
-  static const int _maxSamples = 200;
+  int get _maxSamples => widget.settings.devMaxSamples;
   final List<_TimedVec3> _accelData = [];
   final List<_TimedVec3> _gyroData = [];
   final List<_TimedVec3> _rawAccelData = [];

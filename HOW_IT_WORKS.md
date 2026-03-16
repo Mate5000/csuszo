@@ -1,288 +1,402 @@
-# Csúszási Súrlódás Mérő — Működési Dokumentáció
+# Mű – Csúszási súrlódásegyüttható-mérő
 
-Az app egy okostelefon gyorsulásmérőjével méri a csúszási súrlódási együtthatót (μ) vízszintes felületen.  
-A logika a `mukodo/App.js` React-os referencia-appon alapul.
-
----
-
-## Képlet
-
-```
-μ = átlagos_lassulás / g
-```
-
-ahol `g = 9.80665 m/s²`. Nincs dőlésszög, nincs gyroszkóp — egyszerű vízszintes csúsztatás.
+> Flutter alkalmazás, amely az okostelefon gyorsulásmérőjét használva méri két felület közötti kinematikus súrlódási együtthatót (μ).
 
 ---
 
-## Fájlstruktúra
+## Tartalom
+
+1. [Fizikai elv](#fizikai-elv)
+2. [Projektstruktúra](#projektstruktúra)
+3. [Adatfolyam](#adatfolyam)
+4. [Modulok részletezve](#modulok-részletezve)
+   - [main.dart](#maindart)
+   - [SettingsService](#settingsservice)
+   - [SensorCollector](#sensorcollector)
+   - [FrictionCalculator](#frictioncalculator)
+   - [MeasurementPage](#measurementpage)
+   - [SettingsPage](#settingspage)
+   - [DevPage](#devpage)
+   - [Widgetek](#widgetek)
+5. [Beállítások](#beállítások)
+6. [Referencia anyagpárok](#referencia-anyagpárok)
+
+---
+
+## Fizikai elv
+
+$$\mu = \frac{a_{\text{lassulás}}}{g}$$
+
+A telefont sima felületre fektetjük, majd meglökjük. Miután elválik a kezünktől, a felszíni súrlódás lassítja le. A gyorsulásmérő Y tengelye rögzíti ezt a lassulást; g = 9,80665 m/s².
+
+**Fázisok:**
+
+| Fázis | Feltétel (m/s²) | Szerepe |
+|---|---|---|
+| Gyorsulás | `Y > +2.0` | Lökés ujjal |
+| Stabil | `\|Y\| < 1.5` | Egyenletes csúszás |
+| **Lassulás** | `Y < −1.5` | **μ kiszámításához** |
+
+$$\mu = \frac{\overline{|a_{\text{lassulás}}|}}{g} \in [0,\, 2]$$
+
+---
+
+## Projektstruktúra
 
 ```
 lib/
-├── main.dart                        # Belépési pont, navigáció
+├── main.dart                   # Belépési pont, CsuszoApp, HomePage
 ├── models/
-│   ├── measurement_result.dart      # Mérési eredmény adatmodellje
-│   ├── material_pair.dart           # Referencia anyagpárok
-│   └── sensor_sample.dart           # (legacy, már nem használt)
+│   ├── measurement_result.dart # Mérési eredmény adatmodell
+│   ├── material_pair.dart      # Referencia anyagpár adatmodell + lista
+│   └── sensor_sample.dart      # (örökölt, nem aktívan használt)
 ├── services/
-│   ├── sensor_collector.dart        # Szenzor adatgyűjtés + mozgás/megállás detektálás
-│   └── friction_calculator.dart     # μ kiszámítása a nyers adatokból
+│   ├── settings_service.dart   # SharedPreferences-alapú beállítások
+│   ├── sensor_collector.dart   # Gyorsulásmérő adatgyűjtés + auto-stop
+│   └── friction_calculator.dart# Fázisdetektálás + μ kiszámítása
 ├── pages/
-│   ├── measurement_page.dart        # Fő mérési képernyő (UI + állapotgép)
-│   └── dev_page.dart                # Fejlesztői szenzor-vizualizáció
+│   ├── measurement_page.dart   # Főoldal (mérés indítása, eredmény)
+│   ├── settings_page.dart      # Beállítások oldal
+│   └── dev_page.dart           # Dev oldal (valós idejű szenzor grafikon)
 └── widgets/
-    ├── accel_chart.dart             # Y-tengely gyorsulás diagram
-    ├── result_card.dart             # Eredmény megjelenítése
-    ├── friction_bar.dart            # μ vizuális skála
-    └── mu_helpers.dart              # μ → szín, szöveges értékelés
+    ├── result_card.dart        # Eredmény kártya widget
+    ├── accel_chart.dart        # Y-tengely gyorsulás grafikon
+    ├── mu_helpers.dart         # μ → szín + szöveges értékelés
+    ├── friction_bar.dart       # (örökölt widget)
+    └── mu_helpers.dart
 ```
 
 ---
 
-## 1. `lib/services/sensor_collector.dart` — Adatgyűjtés
+## Adatfolyam
 
-A `SensorCollector` osztály kezeli a teljes mérési ciklust.
-
-### Konstansok
-
-```dart
-static const int _dataIntervalMs = 50;      // 20 Hz adatmentés
-static const int _detectionIntervalMs = 100; // megállás-ellenőrzés gyakorisága
-static const int _timeoutMs = 8000;          // biztonsági időkorlát (8 mp)
-static const int _stopConfirmCount = 6;      // ennyi egymás utáni "megállt" check kell
-static const double _moveThreshold = 0.2;   // g — ennél nagyobb → megmozdult
-static const double _stopAvgThreshold = 0.1; // g — átlag alatt: megállt?
-static const double _stopMaxThreshold = 0.15;// g — max alatt: megállt?
+```
+Felhasználó lök
+       │
+       ▼
+SensorCollector.startCollection()
+  └─ accelerometerEventStream (10 ms-es polling)
+  └─ 50 ms-ként Y értéket ment g-be konvertálva
+  └─ 100 ms-ként megállás-detektálás
+  └─ timeout után automatikus leállás
+       │
+       ▼ onComplete(List<double> yData)
+FrictionCalculator.calculate(yData)
+  └─ g → m/s² konverzió
+  └─ fázis besorolás (gyorsulás / stabil / lassulás)
+  └─ μ = átl. lassulás / g
+       │
+       ▼ MeasurementResult
+MeasurementPage
+  └─ ResultCard      (μ + statisztikák)
+  └─ AccelChart      (Y tengely időgrafikon)
+  └─ előzmények listája
 ```
 
-### Adatgyűjtés (20 Hz)
+---
 
-A szenzort ~60 Hz-en olvassuk, de csak 50 ms-enként mentjük el:
+## Modulok részletezve
 
-```dart
-_accelSub = accelerometerEventStream(
-  samplingPeriod: const Duration(milliseconds: 16),
-).listen((event) {
-  final now = DateTime.now();
-  if (_lastDataTime == null ||
-      now.difference(_lastDataTime!).inMilliseconds >= _dataIntervalMs) {
-    // m/s² → g egység
-    _collectedY.add(event.y / 9.80665);
-    _lastDataTime = now;
-    onProgress?.call(_collectedY.length);
-  }
-});
-```
+### main.dart
 
-> **Miért Y tengely?** A telefon portrait módban tartva a Y tengely mutat előre/hátra — ez a csúsztatás iránya.
-
-### Mozgás és megállás detektálás (100 ms-enként)
+Az alkalmazás belépési pontja. `SettingsService`-t inicializál, majd átadja az egész widget-fának.
 
 ```dart
-void _checkStopCondition() {
-  if (!_isCollecting || _collectedY.length < 20) return;
-
-  // Az utolsó 10 minta vizsgálata
-  final lastValues = _collectedY.sublist(_collectedY.length - 10);
-  final avgAbs = lastValues.map((v) => v.abs()).reduce((a, b) => a + b) / lastValues.length;
-  final maxAbs = lastValues.map((v) => v.abs()).reduce((a, b) => a > b ? a : b);
-
-  // 1. fázis: mozgás detektálás
-  if (!_hasMoved && maxAbs > _moveThreshold) {
-    _hasMoved = true;
-  }
-
-  // 2. fázis: megállás detektálás (csak mozgás után)
-  if (_hasMoved) {
-    if (avgAbs < _stopAvgThreshold && maxAbs < _stopMaxThreshold) {
-      _stoppedCounter++;
-      if (_stoppedCounter >= _stopConfirmCount) {
-        _finish(); // 6 × 100ms = 600ms biztos megállás után kész
-      }
-    } else {
-      _stoppedCounter = 0; // reset ha megint mozog
-    }
-  }
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  final settings = SettingsService();
+  await settings.init();           // SharedPreferences betöltése
+  runApp(CsuszoApp(settings: settings));
 }
 ```
 
-### Mérési ciklus állapotai
+`HomePage` két tabból áll (`NavigationBar`):
+
+| Tab | Widget | Leírás |
+|---|---|---|
+| Mérés | `MeasurementPage` | Mérés indítása, eredmény |
+| Dev | `DevPage` | Valós idejű szenzor nézet |
+
+---
+
+### SettingsService
+
+`lib/services/settings_service.dart`
+
+`SharedPreferences`-t használ; az értékek **újraindítás után is megmaradnak**.
+
+```dart
+final settings = SettingsService();
+await settings.init();
+
+// Olvasás
+int ms = settings.samplingIntervalMs;   // default: 50
+int to = settings.timeoutMs;            // default: 8000
+int sc = settings.stopConfirmCount;     // default: 6
+int dm = settings.devMaxSamples;        // default: 200
+bool as = settings.autoSave;            // default: false
+
+// Írás
+await settings.setSamplingIntervalMs(20);
+await settings.setTimeoutMs(10000);
+
+// Visszaállítás
+await settings.resetToDefaults();
+```
+
+**Elérhető opciók:**
+
+| Beállítás | Kulcs | Opciók | Default |
+|---|---|---|---|
+| Mintavételezési idő | `sampling_interval_ms` | 20 / 50 / 100 ms | 50 ms |
+| Max. mérési idő | `timeout_ms` | 5 / 8 / 10 / 15 s | 8 s |
+| Megállás érzékenység | `stop_confirm_count` | 3 / 6 / 10 lépés | 6 |
+| Dev grafikon minták | `dev_max_samples` | 100 / 200 / 500 | 200 |
+| Automatikus mentés | `auto_save` | be / ki | ki |
+
+---
+
+### SensorCollector
+
+`lib/services/sensor_collector.dart`
+
+Gyűjti az Y-tengelyes gyorsulásmérő adatokat, és **automatikusan megáll**, ha a telefon megáll.
+
+```dart
+final collector = SensorCollector();
+
+// Callback-ek beállítása
+collector.onStarted  = ()              { /* mérés elindult */ };
+collector.onProgress = (int count)     { /* UI frissítés */ };
+collector.onComplete = (List<double> y){ /* feldolgozás */ };
+
+// Indítás (a beállításokból jövő paraméterekkel)
+collector.startCollection(
+  dataIntervalMs:   50,   // mennyire sűrűn mentse a mintákat
+  timeoutMs:        8000, // max mérési idő ms-ban
+  stopConfirmCount: 6,    // hány egymást követő "csend" = megállt
+);
+
+// Megszakítás
+collector.cancel();
+```
+
+**Belső logika:**
 
 ```
-startCollection() hívás
-    │
-    ▼
-[Várakozás mozgásra]  ← maxAbs > 0.2g → _hasMoved = true
-    │
-    ▼
-[Mozgás rögzítve]     ← adatok gyűlnek
-    │
-    ▼
-[Megállás detektálás] ← avgAbs < 0.1g && maxAbs < 0.15g, 6×egymás után
-    │                   VAGY 8 mp timeout
-    ▼
-onComplete(List<double> yData) callback
+Szenzor poll: 10 ms-ként (hardware-hez kötve)
+Adat mentés:  csak ha az utolsó mentés óta ≥ dataIntervalMs telt el
+              Y értéke: event.y / 9.80665  (m/s² → g)
+
+Megállás-detektálás (100 ms-ként):
+  lastValues = utolsó 10 minta
+  avgAbs = átlag(|y|)
+  maxAbs = max(|y|)
+
+  Ha még nem volt mozgás ÉS maxAbs > 0.2g  → _hasMoved = true
+  Ha volt mozgás ÉS avgAbs < 0.1g ÉS maxAbs < 0.15g:
+    _stoppedCounter++
+    Ha _stoppedCounter ≥ stopConfirmCount → _finish()
+  Egyébként:
+    _stoppedCounter = 0
 ```
 
 ---
 
-## 2. `lib/services/friction_calculator.dart` — μ Számítás
+### FrictionCalculator
 
-### Küszöbök (m/s²-ben)
+`lib/services/friction_calculator.dart`
+
+Statikus osztály, `List<double>` (g egységű Y adatok) → `MeasurementResult?`.
 
 ```dart
-static const double _accelerationThreshold  = 2.0;  // lökés fázis
-static const double _steadyThreshold        = 1.5;  // egyenletes csúszás
-static const double _decelerationThreshold  = 1.5;  // lassulás fázis
+MeasurementResult? result = FrictionCalculator.calculate(yData);
+// null, ha < 3 lassulási minta volt (nem érvényes mérés)
 ```
 
-### Algoritmus
+**Algoritmus:**
 
 ```dart
-static MeasurementResult? calculate(List<double> yData) {
-  // 1. g → m/s² konverzió
-  final ms2 = yData.map((y) => y * g).toList();
+const g = 9.80665;
+// Küszöbök m/s²-ban:
+const _accelerationThreshold  =  2.0;  // Y > +2.0  → gyorsulás
+const _decelerationThreshold  =  1.5;  // Y < -1.5  → lassulás
+const _steadyThreshold        =  1.5;  // |Y| < 1.5 → stabil
 
-  // 2. Fázis osztályozás
-  final List<double> accelPhase = [];   // value > +2.0 m/s²  (lökés)
-  final List<double> steadyPhase = [];  // |value| < 1.5 m/s² (egyenletes)
-  final List<double> decelPhase = [];   // value < -1.5 m/s²  (lassulás/fékezés)
+// Fázisok szétválasztása:
+for (final value in yData.map((y) => y * g)) {
+  if (value > _accelerationThreshold)   accelPhase.add(value);
+  else if (value < -_decelerationThreshold) decelPhase.add(value);
+  else if (value.abs() < _steadyThreshold)  steadyPhase.add(value);
+}
 
-  for (final value in ms2) {
-    if (value > _accelerationThreshold) {
-      accelPhase.add(value);
-    } else if (value < -_decelerationThreshold) {
-      decelPhase.add(value);
-    } else if (value.abs() < _steadyThreshold) {
-      steadyPhase.add(value);
-    }
-  }
+// μ kiszámítása:
+if (decelPhase.length < 3) return null;        // nem érvényes
+avgDecel = mean(decelPhase.map(|v|))           // átl. lassulás (m/s²)
+mu       = (avgDecel / g).clamp(0.0, 2.0)     // μ ∈ [0, 2]
+```
 
-  // 3. Minimum 3 lassulási minta kell
-  if (decelPhase.length < 3) return null;
+---
 
-  // 4. μ = átlagos lassulás / g
-  final avgDecel = decelPhase.map((v) => v.abs()).reduce((a, b) => a + b) / decelPhase.length;
-  final mu = (avgDecel / g).clamp(0.0, 2.0);
+### MeasurementPage
 
-  return MeasurementResult(mu: mu, avgDeceleration: avgDecel, ...);
+`lib/pages/measurement_page.dart`
+
+A főoldal; `SliverAppBar.large`-t használ. Állapotgép:
+
+```
+idle → measuring → calculating → done
+                              ↘ error
+```
+
+| Állapot | Megjelenítés |
+|---|---|
+| `idle` | Útmutató + „MÉRÉS INDÍTÁSA" gomb |
+| `measuring` | Pulzáló kör + mintaszám, „Mégse" gomb |
+| `calculating` | `CircularProgressIndicator` |
+| `done` | `ResultCard` + `AccelChart` + „ÚJ MÉRÉS" gomb |
+| `error` | Hibaüzenet kártya |
+
+Az AppBar-ban **⚙️ Beállítások** gomb nyitja meg a `SettingsPage`-t.  
+A mérés után az eredmény bekerül a session-szintű **előzmények** listájába (max 10 látható).
+
+Az oldal alján **referencia anyagpár** lista is megjelenik összehasonlításhoz.
+
+```dart
+// Beállítások alkalmazása mérésindításkor:
+_collector.startCollection(
+  dataIntervalMs:   widget.settings.samplingIntervalMs,
+  timeoutMs:        widget.settings.timeoutMs,
+  stopConfirmCount: widget.settings.stopConfirmCount,
+);
+```
+
+---
+
+### SettingsPage
+
+`lib/pages/settings_page.dart`
+
+`SliverAppBar.large`-alapú oldal, `ChoiceChip` gombok az opciók kiválasztásához.
+
+```dart
+// Megnyitás a MeasurementPage-ről:
+await Navigator.push(
+  context,
+  MaterialPageRoute(builder: (_) => SettingsPage(settings: widget.settings)),
+);
+```
+
+Gombok:
+- **Mentés** → eltárolja az összes értéket és visszalép
+- **↺ Visszaállítás** (AppBar jobb szélén) → megerősítő dialóg után alapértékekre állít
+
+---
+
+### DevPage
+
+`lib/pages/dev_page.dart`
+
+Valós idejű szenzor megjelenítés. Rögzítés indítása/leállítása gombbal.
+
+**3 grafikon** jelenik meg egymás alatt (20 ms mintavételezéssel):
+
+| Grafikon | Szenzor | Egység |
+|---|---|---|
+| User Accelerometer | `userAccelerometerEventStream` (gravitáció nélkül) | m/s² |
+| Raw Accelerometer | `accelerometerEventStream` (gravitációval) | m/s² |
+| Gyroscope | `gyroscopeEventStream` | rad/s |
+
+A megjelenített minták száma (`devMaxSamples`) beállítható a Beállítások oldalon.
+
+```dart
+int get _maxSamples => widget.settings.devMaxSamples;
+// ...
+if (_accelData.length > _maxSamples) _accelData.removeAt(0);
+```
+
+---
+
+### Widgetek
+
+#### `ResultCard`
+
+Megjeleníti a `MeasurementResult` főbb adatait:
+- μ értéke + szöveges minősítés (`muEvaluation`)
+- Átlagos lassulás (m/s²), total minta, fázisok mintaszáma
+- Keret színe μ-arányos (`muColor`)
+
+#### `AccelChart` (`fl_chart`)
+
+Y-tengely gyorsulás az idő függvényében, a mért `rawYData` alapján. X tengely: idő (s), feltételezve a beállított `samplingIntervalMs`-t (20 Hz esetén 0.05 s/minta).
+
+#### `mu_helpers.dart`
+
+```dart
+Color muColor(double mu) {
+  if (mu < 0.2) return Colors.red;        // nagyon síkos
+  if (mu < 0.4) return Colors.orange;
+  if (mu < 0.6) return Colors.amber;
+  if (mu < 0.8) return Colors.lightGreen;
+  return Colors.green;                    // kiváló tapadás
+}
+
+String muEvaluation(double mu) {
+  if (mu < 0.2) return 'Nagyon síkos (< 0.2)';
+  if (mu < 0.4) return 'Síkos (0.2–0.4)';
+  if (mu < 0.6) return 'Közepes (0.4–0.6)';
+  if (mu < 0.8) return 'Jó tapadás (0.6–0.8)';
+  return 'Kiváló (> 0.8)';
 }
 ```
 
-### Vizuális magyarázat
+---
 
-```
-Y gyorsulás (m/s²)
-     │
- +8  │   ██                        ← gyorsulás fázis (lökés)
- +4  │   ████
-  0  ├──────────████████────────── ← egyenletes fázis
- -4  │               ████████████ ← lassulás fázis (súrlódás hatása)
- -8  │
-     └──────────────────────────── idő (s)
+## Beállítások
 
-μ = átlag(|lassulás fázis értékei|) / 9.80665
-```
+A `SettingsPage` a következő paramétereket teszi beállíthatóvá:
+
+### Adatgyűjtés
+
+- **Mintavételezési idő** – milyen sűrűn mentse el a gyorsulásmérő adatait (20 / 50 / 100 ms). Kisebb érték = több pont, pontosabb görbe, nagyobb adatmennyiség.
+- **Max. mérési idő** – biztonsági timeout (5 / 8 / 10 / 15 s). Ha a telefon nem áll meg előbb, ennyi idő után automatikusan befejezi a gyűjtést.
+- **Megállás érzékenység** – hány egymást követő 100 ms-es ablaknak kell „csendesnek" lennie (3 / 6 / 10). Kisebb = gyorsabban detektál megállást, de esetleg idő előtt.
+
+### Dev nézet
+
+- **Grafikon minták száma** – a Dev oldal görgetőablakának mérete (100 / 200 / 500 db).
+
+### Mentés
+
+- **Automatikus mentés** – ha be van kapcsolva, a jövőbeli mentési logika automatikusan naplóz (jelenleg flag-et tárol, az integráció a `autoSave` getterrel végezhető el).
 
 ---
 
-## 3. `lib/models/measurement_result.dart` — Adatmodell
-
-```dart
-class MeasurementResult {
-  final double mu;                   // súrlódási együttható (0–2)
-  final double avgDeceleration;      // átl. lassulás m/s²-ben
-  final int accelSampleCount;        // összes minta száma
-  final int accelerationPhaseCount;  // lökési fázis mintáinak száma
-  final int steadyPhaseCount;        // egyenletes fázis mintáinak száma
-  final int decelerationPhaseCount;  // lassulási fázis mintáinak száma
-  final List<double> rawYData;       // nyers Y-adatok (g egységben, diagramhoz)
-  final DateTime timestamp;          // mérés időpontja
-}
-```
-
----
-
-## 4. `lib/pages/measurement_page.dart` — UI Állapotgép
-
-```dart
-enum _MeasureState { idle, measuring, calculating, done, error }
-```
-
-| Állapot | Megjelenítés | Mi történik |
-|---------|-------------|-------------|
-| `idle` | "MÉRÉS INDÍTÁSA" gomb | Vár a felhasználóra |
-| `measuring` | Pulzáló kör, mintaszámláló | `SensorCollector` gyűjt |
-| `calculating` | `CircularProgressIndicator` | `FrictionCalculator.calculate()` fut |
-| `done` | `ResultCard` + `AccelChart` | Eredmény megjelenítve |
-| `error` | Piros hibaüzenet | Kevés lassulási minta |
-
-### Callbacks bekötése
-
-```dart
-_collector.onStarted = () {
-  setState(() => _state = _MeasureState.measuring);
-};
-
-_collector.onProgress = (count) {
-  setState(() => _dataCount = count); // élő mintaszámláló
-};
-
-_collector.onComplete = (yData) {
-  setState(() => _state = _MeasureState.calculating);
-  final result = FrictionCalculator.calculate(yData);
-  if (result != null) {
-    setState(() { _result = result; _state = _MeasureState.done; });
-  } else {
-    setState(() { _state = _MeasureState.error; });
-  }
-};
-```
-
----
-
-## 5. `lib/widgets/accel_chart.dart` — Diagram
-
-A nyers Y-adatokat jeleníti meg m/s²-ben az idő függvényében (20 Hz → 0.05 s/minta):
-
-```dart
-for (int i = 0; i < result.rawYData.length; i++) {
-  spots.add(FlSpot(i * 0.05, result.rawYData[i] * 9.80665));
-  //               ^ idő (s)   ^ g → m/s² konverzió
-}
-```
-
----
-
-## 6. `lib/widgets/result_card.dart` — Eredménykártya
-
-Megjeleníti:
-- `μ` értéke nagy betűkkel, színkódolással (`mu_helpers.dart`)
-- Szöveges értékelés (pl. "Jó tapadás")
-- `FrictionBar` — vizuális skála 0–1.5 között
-- Fázis-statisztikák táblázat
-- Figyelmeztetés ha `decelerationPhaseCount < 5`
-
-```dart
-if (result.decelerationPhaseCount < 5)
-  Text('Kevés lassulási adat! Lökd meg erősebben!')
-```
-
----
-
-## Használat
-
-1. Telefon portrait módban, sima vízszintes felületen
-2. **MÉRÉS INDÍTÁSA** gomb megnyomása
-3. A telefont meg kell lökni (csúszon el, majd álljon meg magától)
-4. Az app automatikusan felismeri a mozgást és a megállást
-5. Eredmény megjelenik μ értékkel és diagrammal
-
-## Tipikus μ értékek
+## Referencia anyagpárok
 
 | Anyagpár | μ |
-|----------|---|
-| Gumi – aszfalt | 0.60–0.80 |
-| Fa – fa | 0.25–0.50 |
-| Jég – jég | 0.03–0.10 |
-| Fém – fém | 0.15–0.45 |
+|---|---|
+| 🚗 Gumi – Száraz aszfalt | 0.80 |
+| 🏗️ Gumi – Beton | 0.70 |
+| 🌧️ Gumi – Nedves aszfalt | 0.50 |
+| 👞 Bőr – Fa | 0.50 |
+| 🪵 Fa – Fa | 0.40 |
+| 🧊 Gumi – Jég | 0.15 |
+| ⚙️ Fém – Fém | 0.15 |
+| 🪟 Üveg – Üveg | 0.10 |
+
+---
+
+## Technológiák
+
+| Csomag | Verzió | Felhasználás |
+|---|---|---|
+| `sensors_plus` | ^6.1.1 | Gyorsulásmérő + giroszkóp olvasás |
+| `fl_chart` | ^0.70.2 | Y-tengely grafikon, Dev grafikonok |
+| `shared_preferences` | ^2.5.3 | Beállítások perzisztens tárolása |
+| `flutter` Material 3 | – | UI, `SliverAppBar`, `ChoiceChip` stb. |
+
+---
+
+*Készítette: Kósa Máté, Hajzer Alexandra, Szántó Dávid, Pongrácz Ádám*
